@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>qRail key test</title>
+<style>
+  *{box-sizing:border-box}
+  body{font-family:system-ui,-apple-system,sans-serif;max-width:640px;margin:0 auto;padding:20px;background:#fff;color:#111}
+  h1{font-size:20px;margin:0 0 4px}
+  p{font-size:13px;color:#555;margin:0 0 16px}
+  label{display:block;font-size:13px;font-weight:600;margin:12px 0 4px}
+  input{width:100%;padding:10px;font-size:15px;border:1px solid #ccc;border-radius:8px}
+  .row{display:flex;gap:8px;margin-top:16px}
+  button{flex:1;padding:12px;font-size:15px;border:0;border-radius:10px;background:#111;color:#fff}
+  button:disabled{opacity:.4}
+  pre{background:#f4f4f4;border-radius:10px;padding:12px;font-size:12px;white-space:pre-wrap;word-break:break-word;min-height:80px;margin-top:16px}
+  .ok{color:#0a7a2f;font-weight:700}
+  .bad{color:#b00020;font-weight:700}
+  .warn{color:#8a5a00;font-weight:700}
+</style>
+</head>
+<body>
+<h1>qRail key test</h1>
+<p>Open this page on your phone's browser, paste your qRail API key, and tap "Run all checks". The key stays in this page only &mdash; it is never saved or sent anywhere except api.qrail.in / qrail.in.</p>
+<label for="key">API key</label>
+<input id="key" type="password" autocomplete="off" placeholder="paste your qRail key">
+<label for="train">Train number</label>
+<input id="train" type="text" inputmode="numeric" value="12393">
+<label for="pnr">PNR number (10 digits)</label>
+<input id="pnr" type="text" inputmode="numeric" maxlength="10" placeholder="e.g. 1234567890">
+<div class="row">
+  <button id="bRun">Run all checks</button>
+</div>
+<pre id="out">Result appears here.</pre>
+<script>
+const out = document.getElementById('out');
+function show(html){ out.innerHTML = html; }
+function escapeHtml(s){
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+async function probe(label, url, useHeader){
+  const key = document.getElementById('key').value.trim();
+  const started = Date.now();
+  try{
+    const headers = useHeader ? { 'Authorization': 'Bearer ' + key } : {};
+    const res = await fetch(url, { method: 'GET', headers: headers, redirect: 'follow' });
+    const ms = Date.now() - started;
+    let bodyText;
+    try { bodyText = await res.text(); } catch(e){ bodyText = '(no body)'; }
+    const snippet = bodyText.slice(0, 220);
+    const cls = res.ok ? 'ok' : (res.status === 401 || res.status === 403 ? 'warn' : 'bad');
+    return '<span class="' + cls + '">' + escapeHtml(label) + ' &rarr; HTTP ' + res.status +
+           ' (' + ms + ' ms)</span>\n' + escapeHtml(snippet) + '\n\n';
+  }catch(err){
+    return '<span class="bad">' + escapeHtml(label) + ' &rarr; request failed</span>\n' +
+           escapeHtml(String(err)) + '\n\n';
+  }
+}
+document.getElementById('bRun').onclick = async () => {
+  const key = document.getElementById('key').value.trim();
+  const train = document.getElementById('train').value.trim() || '12393';
+  const pnr = document.getElementById('pnr').value.trim() || '1234567890';
+  if(!key){ show('<span class="bad">Paste your API key first.</span>'); return; }
+  const K = encodeURIComponent(key);
+  const T = encodeURIComponent(train);
+  const P = encodeURIComponent(pnr);
+  const H1 = 'https://api.qrail.in';
+  const H3 = 'https://qrail.in';
+  show('Running checks &hellip;');
+  const checks = [
+    // v1 live status candidates (GET — POST returns 405)
+    ['v1 running/status ?train + Bearer header', H1 + '/api/v1/trains/running/status?train=' + T, true],
+    ['v1 running/status /{train} + Bearer header', H1 + '/api/v1/trains/running/status/' + T, true],
+    ['v1 running/status ?train&key=', H1 + '/api/v1/trains/running/status?train=' + T + '&key=' + K, false],
+    // v1 train details candidates
+    ['v1 details ?train + Bearer header', H1 + '/api/v1/trains/details?train=' + T, true],
+    ['v1 details /{train} + Bearer header', H1 + '/api/v1/trains/details/' + T, true],
+    ['v1 details ?train&key=', H1 + '/api/v1/trains/details?train=' + T + '&key=' + K, false],
+    // v1 PNR candidates
+    ['v1 pnr/status ?pnr + Bearer header', H1 + '/api/v1/trains/pnr/status?pnr=' + P, true],
+    ['v1 pnr/status ?pnr&key=', H1 + '/api/v1/trains/pnr/status?pnr=' + P + '&key=' + K, false],
+    // v3 candidates (key in URL path, per qrail.in developers page)
+    ['v3 running /{train}/today/{key}', H3 + '/api/v3/trains/running/' + T + '/today/' + K, false]
+  ];
+  let html = '';
+  for(const [label, url, useHeader] of checks){
+    html += await probe(label, url, useHeader);
+    show(html + '<span class="warn">still running &hellip;</span>');
+  }
+  html += '<span class="ok">Done.</span> Copy everything above and send it back.';
+  show(html);
+};
+</script>
+</body>
+</html>

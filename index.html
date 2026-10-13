@@ -29,6 +29,8 @@
   #apiDot{width:9px;height:9px;border-radius:50%;background:var(--mut);flex-shrink:0;}
   #apiDot.ok{background:var(--green);} #apiDot.bad{background:var(--red);}
   #apiTxt{font-size:12px;color:var(--mut);}
+  #dbBar{text-align:center;font-size:12px;color:var(--mut);padding:2px 0 6px;display:block;}
+  #dbBar.ok{display:none;}
   main{flex:1;padding:4px 14px 90px;}
   .view{display:none;} .view.on{display:block;animation:fade .18s ease;}
   @keyframes fade{from{opacity:0;transform:translateY(4px);}to{opacity:1;}}
@@ -98,6 +100,7 @@
     <h1>RailTrack</h1>
     <span id="apiDot"></span><span id="apiTxt">checking…</span>
   </header>
+  <div id="dbBar">Loading offline database…</div>
   <main>
     <!-- LIVE -->
     <section class="view on" id="v-live">
@@ -147,7 +150,7 @@
       <button class="btn" id="schedBtn">Show schedule</button>
       <div id="schedOut"></div>
     </section>
-    <div class="foot">Data: Indian Railways NTES · Offline train &amp; station directory included</div>
+    <div class="foot">Trains &amp; schedules work fully offline · Live status &amp; PNR need the API</div>
   </main>
 </div>
 <nav><div class="in">
@@ -158,7 +161,7 @@
 </div></nav>
 <script>
 const API = 'https://indian-railway-api.onrender.com';
-let TRAINS = [], STATIONS = [], DBOK = false;
+let TRAINS = [], STATIONS = [], STN = {}, DBOK = false;
 const $ = id => document.getElementById(id);
 
 /* ---------- tabs ---------- */
@@ -179,7 +182,42 @@ async function loadDB(){
       fetch('data/stations.min.json').then(r=>r.json())
     ]);
     TRAINS = t; STATIONS = s; DBOK = true;
-  }catch(e){ DBOK = false; }
+    STN = {}; s.forEach(x=>{ STN[x[0]] = x[1]; });
+    $('dbBar').className = 'ok';
+  }catch(e){ DBOK = false; $('dbBar').textContent = 'Offline database failed to load.'; }
+}
+/* ---------- offline route helpers ---------- */
+/* t[5] = ";CODE,depMin,arrMin,day;..." (minutes since midnight, "" = none) */
+function parseRoute(t){
+  return t[5].split(';').slice(1).map(p=>{
+    const c = p.split(',');
+    return {code:c[0], dep:c[1]===''||c[1]==null?null:+c[1], arr:c[2]===''||c[2]==null?null:+c[2], day:+c[3]||1};
+  });
+}
+function fmtM(m){ return String(Math.floor(m/60)).padStart(2,'0')+':'+String(m%60).padStart(2,'0'); }
+function offlineBetween(from, to, date){
+  const day = new Date(date+'T12:00:00').getDay(); // 0 = Sunday
+  const fTag = ';'+from+',', tTag = ';'+to+',';
+  const res = [];
+  for(const t of TRAINS){
+    if(!t[4] || t[4][day] !== '1') continue;
+    const r = t[5];
+    const fi = r.indexOf(fTag);
+    if(fi < 0) continue;
+    if(r.indexOf(tTag, fi + 1) < 0) continue;
+    res.push(t);
+  }
+  return res;
+}
+function stopInfo(t, code){
+  const stops = parseRoute(t);
+  for(const s of stops) if(s.code === code) return s;
+  return null;
+}
+function durStr(d1, m1, d2, m2){
+  let m = (d2-d1)*1440 + (m2-m1);
+  if(m < 0) m += 1440;
+  return Math.floor(m/60)+'h '+String(m%60).padStart(2,'0')+'m';
 }
 function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;'); }
 
@@ -308,43 +346,53 @@ $('pnrBtn').addEventListener('click', async ()=>{
   }catch(e){ apiErr('pnrOut'); }
 });
 
-/* ---------- trains between stations ---------- */
-$('trainsBtn').addEventListener('click', async ()=>{
+/* ---------- trains between stations (OFFLINE) ---------- */
+$('trainsBtn').addEventListener('click', ()=>{
   const from = stationCode($('fromQ')), to = stationCode($('toQ'));
   if(from.length < 3 || to.length < 3){ $('trainsOut').innerHTML = '<div class="err">Pick valid stations from the suggestions.</div>'; return; }
+  if(!DBOK){ $('trainsOut').innerHTML = '<div class="spin"></div>'; return; }
   const date = $('dateQ').value || new Date().toISOString().slice(0,10);
-  loading('trainsOut');
-  try{
-    const r = await fetch(API+'/api/trains?from='+encodeURIComponent(from)+'&to='+encodeURIComponent(to)+'&date='+date);
-    if(!r.ok) throw 0;
-    const j = await r.json();
-    const list = j.data || [];
-    if(!list.length){ $('trainsOut').innerHTML = '<div class="err">No trains found for this route &amp; date.</div>'; return; }
-    $('trainsOut').innerHTML = '<div class="card">' + list.map(t=>
-      '<div class="trainline"><div><div class="n">'+esc(t.trainNumber)+'</div><div class="t">'+esc(t.trainName)+'</div>'+
-      '<div class="t">'+esc((t.runsOn||[]).join(' '))+(t.availableClasses?' · '+esc(t.availableClasses.join('/')):'')+(t.fare?' · ₹'+esc(t.fare):'')+'</div></div>'+
-      '<div class="times"><b>'+esc(t.departureTime)+'</b> → <b>'+esc(t.arrivalTime)+'</b><div class="t">'+esc(t.duration||'')+'</div></div></div>'
-    ).join('') + '</div>';
-  }catch(e){ apiErr('trainsOut'); }
+  const list = offlineBetween(from, to, date);
+  if(!list.length){ $('trainsOut').innerHTML = '<div class="err">No trains found between '+esc(from)+' and '+esc(to)+' on this date (offline timetable).</div>'; return; }
+  const rows = [];
+  for(const t of list){
+    const a = stopInfo(t, from), b = stopInfo(t, to);
+    if(!a || !b) continue;
+    const dep = a.dep != null ? a.dep : a.arr;
+    const arr = b.arr != null ? b.arr : b.dep;
+    if(dep == null || arr == null) continue;
+    rows.push({t, dep, arr, dur: durStr(a.day, dep, b.day, arr)});
+  }
+  rows.sort((x,y)=>x.dep - y.dep);
+  if(!rows.length){ $('trainsOut').innerHTML = '<div class="err">No trains with timings found for this route.</div>'; return; }
+  $('trainsOut').innerHTML = '<div class="card"><p class="sub" style="margin-top:0">'+rows.length+' trains · offline timetable · '+
+    esc(new Date(date+'T12:00:00').toDateString())+'</p>' + rows.map(r=>
+    '<div class="trainline"><div><div class="n">'+esc(r.t[0])+'</div><div class="t">'+esc(r.t[1])+'</div>'+
+    '<div class="t">'+esc(r.t[2])+' → '+esc(r.t[3])+'</div></div>'+
+    '<div class="times"><b>'+fmtM(r.dep)+'</b> → <b>'+fmtM(r.arr)+'</b><div class="t">'+r.dur+'</div></div></div>'
+  ).join('') + '</div>';
 });
 
-/* ---------- schedule ---------- */
-$('schedBtn').addEventListener('click', async ()=>{
+/* ---------- schedule (OFFLINE) ---------- */
+$('schedBtn').addEventListener('click', ()=>{
   const num = trainNum($('schedQ'));
   if(!/^\d{4,5}$/.test(num)){ $('schedOut').innerHTML = '<div class="err">Enter a valid train number.</div>'; return; }
-  loading('schedOut');
-  try{
-    const d = await api('/api/train/'+num+'/schedule');
-    const route = (d.stations||[]).map((s,i)=>
-      '<li class="'+(i===0?'done':'')+'"><b>'+esc(s.stationCode)+'</b> '+esc(s.stationName)+
-      '<div class="t">Arr '+(esc(s.arrivalTime)||'—')+' · Dep '+(esc(s.departureTime)||'—')+(s.haltTime?' · Halt '+esc(s.haltTime):'')+(s.day?' · Day '+esc(s.day):'')+(s.distance!=null?' · '+esc(s.distance)+' km':'')+'</div></li>'
-    ).join('');
-    $('schedOut').innerHTML =
-      '<div class="card"><h3>'+esc(d.trainName)+'</h3>'+
-      '<p class="sub">'+esc(d.trainNumber)+' · '+esc(d.source||'')+' → '+esc(d.destination||'')+(d.totalDistance?' · '+esc(d.totalDistance)+' km':'')+(d.totalDuration?' · '+esc(d.totalDuration):'')+'</p>'+
-      ((d.frequency&&d.frequency.length)?'<p class="sub">Runs: '+esc(d.frequency.join(', '))+'</p>':'')+
-      '<ul class="tl">'+route+'</ul></div>';
-  }catch(e){ apiErr('schedOut'); }
+  if(!DBOK){ $('schedOut').innerHTML = '<div class="spin"></div>'; return; }
+  const t = TRAINS.find(x=>x[0] === num);
+  if(!t){ $('schedOut').innerHTML = '<div class="err">Train not in the offline database.</div>'; return; }
+  const stops = parseRoute(t);
+  const days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  const runs = t[4] ? t[4].split('').map((v,i)=>v==='1'?days[i]:null).filter(Boolean).join(', ') : '';
+  const route = stops.map((s,i)=>
+    '<li class="'+(i===0?'done':'')+'"><b>'+esc(s.code)+'</b> '+esc(STN[s.code]||'')+
+    '<div class="t">Arr '+(s.arr!=null?fmtM(s.arr):'—')+' · Dep '+(s.dep!=null?fmtM(s.dep):'—')+' · Day '+s.day+'</div></li>'
+  ).join('');
+  $('schedOut').innerHTML =
+    '<div class="card"><h3>'+esc(t[1])+'</h3>'+
+    '<p class="sub">'+esc(t[0])+' · '+esc(t[2])+' → '+esc(t[3])+' · '+stops.length+' stops</p>'+
+    (runs?'<p class="sub">Runs: '+esc(runs)+'</p>':'')+
+    '<p class="sub">Offline timetable</p>'+
+    '<ul class="tl">'+route+'</ul></div>';
 });
 
 /* ---------- boot ---------- */

@@ -1,4 +1,4 @@
-const CACHE = 'railtrack-v2';
+const CACHE = 'railtrack-v3';
 const SHELL = [
   './', './index.html', './manifest.json', './icon.svg',
   './icon-192.png', './icon-512.png',

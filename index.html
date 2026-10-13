@@ -150,7 +150,21 @@
       <button class="btn" id="schedBtn">Show schedule</button>
       <div id="schedOut"></div>
     </section>
-    <div class="foot">Trains &amp; schedules work fully offline · Live status &amp; PNR need the API</div>
+    <!-- STATION -->
+    <section class="view" id="v-stn">
+      <div class="field">
+        <label>Station</label>
+        <input id="stnQ" placeholder="e.g. GHY or Guwahati" autocomplete="off">
+        <div class="sugg" id="stnSugg"></div>
+      </div>
+      <div class="field">
+        <label>Date</label>
+        <input id="stnDate" type="date">
+      </div>
+      <button class="btn" id="stnBtn">Show trains at station</button>
+      <div id="stnOut"></div>
+    </section>
+    <div class="foot">Everything except live status &amp; PNR works fully offline</div>
   </main>
 </div>
 <nav><div class="in">
@@ -158,6 +172,7 @@
   <button data-v="v-pnr"><span class="ic">🎫</span>PNR</button>
   <button data-v="v-trains"><span class="ic">🚂</span>Trains</button>
   <button data-v="v-sched"><span class="ic">🗓</span>Schedule</button>
+  <button data-v="v-stn"><span class="ic">🚉</span>Station</button>
 </div></nav>
 <script>
 const API = 'https://indian-railway-api.onrender.com';
@@ -178,18 +193,37 @@ document.querySelectorAll('nav button').forEach(b=>{
 async function loadDB(){
   try{
     const [t, s] = await Promise.all([
-      fetch('data/trains.min.json').then(r=>r.json()),
-      fetch('data/stations.min.json').then(r=>r.json())
+      fetch('data/trains.min.json').then(r=>{ if(!r.ok) throw 0; return r.json(); }),
+      fetch('data/stations.min.json').then(r=>{ if(!r.ok) throw 0; return r.json(); })
     ]);
+    // stale-cache guard: old data file has no route field (t[5])
+    if(!t.length || !t[0][5] || !s.length) throw new Error('stale-db');
     TRAINS = t; STATIONS = s; DBOK = true;
     STN = {}; s.forEach(x=>{ STN[x[0]] = x[1]; });
     $('dbBar').className = 'ok';
-  }catch(e){ DBOK = false; $('dbBar').textContent = 'Offline database failed to load.'; }
+  }catch(e){
+    // self-heal once: nuke caches + service worker, then reload fresh
+    try{
+      if(!sessionStorage.getItem('dbFix')){
+        sessionStorage.setItem('dbFix','1');
+        const ks = await caches.keys();
+        await Promise.all(ks.map(k=>caches.delete(k)));
+        if('serviceWorker' in navigator){
+          const regs = await navigator.serviceWorker.getRegistrations();
+          await Promise.all(regs.map(r=>r.unregister()));
+        }
+        location.reload();
+        return;
+      }
+    }catch(_){}
+    DBOK = false;
+    $('dbBar').textContent = 'Offline database failed to load. Check connection & reopen.';
+  }
 }
 /* ---------- offline route helpers ---------- */
 /* t[5] = ";CODE,depMin,arrMin,day;..." (minutes since midnight, "" = none) */
 function parseRoute(t){
-  return t[5].split(';').slice(1).map(p=>{
+  if(!t[5]) return [];  return t[5].split(';').slice(1).map(p=>{
     const c = p.split(',');
     return {code:c[0], dep:c[1]===''||c[1]==null?null:+c[1], arr:c[2]===''||c[2]==null?null:+c[2], day:+c[3]||1};
   });
@@ -200,7 +234,7 @@ function offlineBetween(from, to, date){
   const fTag = ';'+from+',', tTag = ';'+to+',';
   const res = [];
   for(const t of TRAINS){
-    if(!t[4] || t[4][day] !== '1') continue;
+    if(!t[4] || t[4][day] !== '1' || !t[5]) continue;
     const r = t[5];
     const fi = r.indexOf(fTag);
     if(fi < 0) continue;
@@ -395,13 +429,44 @@ $('schedBtn').addEventListener('click', ()=>{
     '<ul class="tl">'+route+'</ul></div>';
 });
 
+/* ---------- station board (OFFLINE) ---------- */
+$('stnBtn').addEventListener('click', ()=>{
+  const code = stationCode($('stnQ'));
+  if(code.length < 3){ $('stnOut').innerHTML = '<div class="err">Pick a valid station from the suggestions.</div>'; return; }
+  if(!DBOK){ $('stnOut').innerHTML = '<div class="spin"></div>'; return; }
+  const date = $('stnDate').value || new Date().toISOString().slice(0,10);
+  const day = new Date(date+'T12:00:00').getDay();
+  const tag = ';'+code+',';
+  const rows = [];
+  for(const t of TRAINS){
+    if(!t[4] || t[4][day] !== '1' || !t[5]) continue;
+    const i = t[5].indexOf(tag);
+    if(i < 0) continue;
+    const seg = t[5].slice(i+1).split(';')[0].split(',');
+    const dep = seg[1]==='' ? null : +seg[1], arr = seg[2]==='' ? null : +seg[2];
+    const tm = arr != null ? arr : dep;
+    if(tm == null) continue;
+    rows.push({t, tm, arr, dep});
+  }
+  rows.sort((a,b)=>a.tm - b.tm);
+  if(!rows.length){ $('stnOut').innerHTML = '<div class="err">No trains halt at '+esc(code)+' on this date (offline timetable).</div>'; return; }
+  $('stnOut').innerHTML = '<div class="card"><p class="sub" style="margin-top:0">'+rows.length+' trains at '+esc(code)+' '+(STN[code]?'· '+esc(STN[code]):'')+
+    ' · offline timetable</p>' + rows.map(r=>
+    '<div class="trainline"><div><div class="n">'+esc(r.t[0])+'</div><div class="t">'+esc(r.t[1])+'</div>'+
+    '<div class="t">'+esc(r.t[2])+' → '+esc(r.t[3])+'</div></div>'+
+    '<div class="times"><b>'+fmtM(r.tm)+'</b><div class="t">'+(r.arr!=null&&r.dep!=null&&r.arr!==r.dep?('A '+fmtM(r.arr)+' · D '+fmtM(r.dep)):(r.arr!=null?'Arr':'Dep'))+'</div></div></div>'
+  ).join('') + '</div>';
+});
+
 /* ---------- boot ---------- */
 (async function(){
   $('dateQ').value = new Date().toISOString().slice(0,10);
+  $('stnDate').value = new Date().toISOString().slice(0,10);
   bindTrainSuggest('liveQ','liveSugg');
   bindTrainSuggest('schedQ','schedSugg');
   bindStationSuggest('fromQ','fromSugg');
   bindStationSuggest('toQ','toSugg');
+  bindStationSuggest('stnQ','stnSugg');
   loadDB();
   try{
     const ctl = new AbortController(); const to = setTimeout(()=>ctl.abort(), 8000);

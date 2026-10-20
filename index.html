@@ -98,12 +98,12 @@
 <div id="app">
   <header>
     <h1>RailTrack</h1>
-    <span id="apiDot"></span><span id="apiTxt">checking…</span>
+    <span id="apiDot" style="display:none"></span><span id="apiTxt" style="display:none">checking…</span>
   </header>
   <div id="dbBar">Loading offline database…</div>
   <main>
-    <!-- LIVE -->
-    <section class="view on" id="v-live">
+    <!-- LIVE (hidden for now) -->
+    <section class="view" id="v-live" style="display:none">
       <div class="field">
         <label>Train number or name</label>
         <input id="liveQ" placeholder="e.g. 12301 or Rajdhani" autocomplete="off">
@@ -122,7 +122,7 @@
       <div id="pnrOut"></div>
     </section>
     <!-- TRAINS BETWEEN -->
-    <section class="view" id="v-trains">
+    <section class="view on" id="v-trains">
       <div class="field">
         <label>From station</label>
         <input id="fromQ" placeholder="e.g. NDLS or New Delhi" autocomplete="off">
@@ -164,13 +164,13 @@
       <button class="btn" id="stnBtn">Show trains at station</button>
       <div id="stnOut"></div>
     </section>
-    <div class="foot">Everything except live status &amp; PNR works fully offline</div>
+    <div class="foot">Everything except PNR works fully offline</div>
   </main>
 </div>
 <nav><div class="in">
-  <button data-v="v-live" class="on"><span class="ic">📍</span>Live</button>
+  <button data-v="v-live" style="display:none"><span class="ic">📍</span>Live</button>
   <button data-v="v-pnr"><span class="ic">🎫</span>PNR</button>
-  <button data-v="v-trains"><span class="ic">🚂</span>Trains</button>
+  <button data-v="v-trains" class="on"><span class="ic">🚂</span>Trains</button>
   <button data-v="v-sched"><span class="ic">🗓</span>Schedule</button>
   <button data-v="v-stn"><span class="ic">🚉</span>Station</button>
 </div></nav>
@@ -228,7 +228,8 @@ function parseRoute(t){
     return {code:c[0], dep:c[1]===''||c[1]==null?null:+c[1], arr:c[2]===''||c[2]==null?null:+c[2], day:+c[3]||1};
   });
 }
-function fmtM(m){ return String(Math.floor(m/60)).padStart(2,'0')+':'+String(m%60).padStart(2,'0'); }
+function fmtM(m){ const h24 = Math.floor(m/60)%24, mm = String(m%60).padStart(2,'0'); const ap = h24 < 12 ? 'AM' : 'PM'; const h = h24%12 || 12; return h+':'+mm+' '+ap; }
+function fmtClock(s){ if(!s) return s; const m = String(s).match(/^(\d{1,2}):(\d{2})/); if(!m) return s; return fmtM((+m[1])*60 + (+m[2])); }
 function offlineBetween(from, to, date){
   const day = new Date(date+'T12:00:00').getDay(); // 0 = Sunday
   const fTag = ';'+from+',', tTag = ';'+to+',';
@@ -342,7 +343,7 @@ $('liveBtn').addEventListener('click', async ()=>{
     if(d.stations && d.stations.length){
       route = '<ul class="tl">' + d.stations.slice(0, 40).map(s=>
         '<li><b>'+esc(s.stationCode)+'</b> '+esc(s.stationName)+
-        '<div class="t">Arr '+(esc(s.arrivalTime)||'—')+' · Dep '+(esc(s.departureTime)||'—')+(s.platform?' · Pf '+esc(s.platform):'')+'</div></li>'
+        '<div class="t">Arr '+(s.arrivalTime?fmtClock(esc(s.arrivalTime)):'—')+' · Dep '+(s.departureTime?fmtClock(esc(s.departureTime)):'—')+(s.platform?' · Pf '+esc(s.platform):'')+'</div></li>'
       ).join('') + '</ul>';
       if(d.stations.length > 40) route += '<div class="sub">+ '+(d.stations.length-40)+' more stops</div>';
     }
@@ -352,7 +353,7 @@ $('liveBtn').addEventListener('click', async ()=>{
       '<div class="big">'+esc(d.currentStation||'—')+'</div><p class="sub">Current station</p>'+
       '<div class="row"><span class="k">Next station</span><span>'+esc(d.nextStation||'—')+'</span></div>'+
       '<div class="row"><span class="k">From → To</span><span>'+esc(d.source||'')+' → '+esc(d.destination||'')+'</span></div>'+
-      '<div class="row"><span class="k">Scheduled</span><span>'+esc(d.scheduledDeparture||'')+' → '+esc(d.scheduledArrival||'')+'</span></div>'+
+      '<div class="row"><span class="k">Scheduled</span><span>'+fmtClock(esc(d.scheduledDeparture||''))+' → '+fmtClock(esc(d.scheduledArrival||''))+'</span></div>'+
       '</div>'+
       (route ? '<div class="card"><h3>Route</h3>'+route+'</div>' : '');
   }catch(e){ apiErr('liveOut'); }
